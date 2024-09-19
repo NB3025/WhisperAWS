@@ -94,8 +94,8 @@ Resources:
                 "Resource": "arn:aws:states:::batch:submitJob.sync",
                 "Parameters": {
                   "JobName": "WhisperTranscriptionJob",
-                  "JobQueue": "${WhisperJobQueueName}",
-                  "JobDefinition": "${WhisperJobDefinitionName}",
+                  "JobQueue": "${JobQueueName}",
+                  "JobDefinition": "${JobDefinitionName}",
                   "Parameters": {
                     "JobId.$": "$.job_id",
                     "S3Address.$":"$.s3_address",
@@ -153,8 +153,8 @@ Resources:
               }
             }
           }
-        - WhisperJobQueueName: !Ref WhisperJobQueueName
-          WhisperJobDefinitionName: !Ref WhisperJobDefinitionName
+        - JobQueueName: !Ref JobQueueName
+          JobDefinitionName: !Ref JobDefinitionName
       TracingConfiguration:
         Enabled: false
 
