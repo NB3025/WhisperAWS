@@ -52,6 +52,7 @@
 ### 1. 기본 인프라 구축
 
 00_VideoProcessingInfrastructureWithVPCAndDynamoDB.yaml 템플릿을 실행하여 VPC, Subnet, DynamoDB 테이블을 생성합니다.
+
 ![CloudFormation 화면](images/00_template.png)
 
 ### 2. Docker 이미지 빌드 및 업로드
@@ -74,13 +75,20 @@ docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/whisper-processor:lates
 01_VideoProcessingBatch.yaml 템플릿을 실행하여 AWS Batch를 구성합니다:
 
 ECR URI : 위 단계에서 실행한 명령어 참고
+
 VPC 및 Subnet : 1 단계에서 배포한 VPC, Subnet 참고
+
 ![CloudFormation 화면](images/01_template.png)
 
 ### 4. Step Functions 생성
 
 02 템플릿을 실행하여 Step Functions를 생성합니다:
 
+JobDefinitionName : 위 단계의 템플릿의 출력에서 참고합니다.
+
+JobQueueName : 위 단계의 템플릿의 출력에서 참고합니다.
+
+![CloudFormation 화면](images/02_template.png)
 
 ### 5. S3 버킷 생성
 
@@ -106,6 +114,18 @@ aws s3 cp function.zip s3://your_bucket/updateJobStatus/function.zip  --region u
 
 03_VideoProcessingAPI.yaml 템플릿을 실행하여 API Gateway와 Lambda 함수를 생성합니다:
 
+DynamoDBTableName : 1단계에서 생성한 DynamoDB 테이블 이름
+
+ProcessVideoS3Key : 위 단계에서 업로드한 Key (processVideo/function.zip)
+
+S3BucketName : 5단계에서 생성한 S3 버킷
+
+StepFunctionsArn : 4단계에서 생성한 StepFunctions의 Arn
+
+UpdateJobStatusS3Key : 위 단계에서 업로드한 Key (updateJobStatus/function.zip)
+
+![CloudFormation 화면](images/03_template.png)
+
 
 ### 8. 웹 애플리케이션 설정
 
@@ -116,12 +136,18 @@ S3_BUCKET = 'your_bucket'
 DYNAMODB_TABLE = 'your_table'
 AWS_REGION = 'us-east-1'
 PROFILE_NAME = 'your_profile'
-API_URL = 'https://g4jg40.execute-api.us-east-1.amazonaws.com/prod/process'
+API_URL = 'https://g4jg40.execute-api.us-east-1.amazonaws.com/prod/process' # 7단계의 CF 출력에서 확인
 ```
 
 ## 사용 방법
 
-1. 웹 애플리케이션을 실행합니다: `python frontend/app.py`
+1. 웹 애플리케이션을 실행합니다
+```python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install flask boto3 requests
+python app.py
+```
 2. 브라우저에서 제공된 URL로 접속합니다.
 3. 영상 또는 음성 파일을 업로드합니다.
 4. 처리가 완료되면 S3에서 자막 파일을 다운로드할 수 있습니다.
