@@ -52,6 +52,7 @@
 ### 1. 기본 인프라 구축
 
 00_VideoProcessingInfrastructureWithVPCAndDynamoDB.yaml 템플릿을 실행하여 VPC, Subnet, DynamoDB 테이블을 생성합니다.
+![CloudFormation 화면](images/00_template.png)
 
 ### 2. Docker 이미지 빌드 및 업로드
 
@@ -72,6 +73,9 @@ docker push 123456789012.dkr.ecr.us-east-1.amazonaws.com/whisper-processor:lates
 
 01_VideoProcessingBatch.yaml 템플릿을 실행하여 AWS Batch를 구성합니다:
 
+ECR URI : 위 단계에서 실행한 명령어 참고
+VPC 및 Subnet : 1 단계에서 배포한 VPC, Subnet 참고
+![CloudFormation 화면](images/01_template.png)
 
 ### 4. Step Functions 생성
 
