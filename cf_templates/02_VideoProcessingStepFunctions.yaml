@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Step Functions and IAM Roles for Video Processing Workflow
+
+Parameters:
+  JobQueueName:
+    Type: String
+    Description: The name of the Job Queue
+
+  JobDefinitionName:
+    Type: String
+    Description: The name of the Job Definition
+
+Resources:
+  LambdaInvokeScopedAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${AWS::StackName}-LambdaInvokeScopedAccessPolicy
+      Description: Allow AWS Step Functions to invoke Lambda functions on your behalf
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: 
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UpdateJobStatusFunction:*
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:UpdateJobStatusFunction
+
+  XRayAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${AWS::StackName}-XRayAccessPolicy
+      Description: Allow AWS Step Functions to call X-Ray daemon on your behalf
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - xray:PutTraceSegments
+              - xray:PutTelemetryRecords
+              - xray:GetSamplingRules
+              - xray:GetSamplingTargets
+            Resource: '*'
+
+  BatchJobManagementFullAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${AWS::StackName}-BatchJobManagementFullAccessPolicy
+      Description: Allows AWS Step Functions to run Batch jobs on your behalf
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - batch:SubmitJob
+              - batch:DescribeJobs
+              - batch:TerminateJob
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - events:PutTargets
+              - events:PutRule
+              - events:DescribeRule
+            Resource: !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForBatchJobsRule
+
+  StepFunctionsStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-StepFunctionsStateMachineRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref XRayAccessPolicy
+        - !Ref LambdaInvokeScopedAccessPolicy
+        - !Ref BatchJobManagementFullAccessPolicy
+
+  VideoProcessingStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub ${AWS::StackName}-VideoProcessingStateMachine
+      RoleArn: !GetAtt StepFunctionsStateMachineRole.Arn
+      DefinitionString: !Sub
+        - |
+          {
+            "Comment": "Video Processing Workflow",
+            "StartAt": "SubmitBatchJob",
+            "States": {
+              "SubmitBatchJob": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::batch:submitJob.sync",
+                "Parameters": {
+                  "JobName": "WhisperTranscriptionJob",
+                  "JobQueue": "${WhisperJobQueueName}",
+                  "JobDefinition": "${WhisperJobDefinitionName}",
+                  "Parameters": {
+                    "JobId.$": "$.job_id",
+                    "S3Address.$":"$.s3_address",
+                    "OutputBucket.$": "$.output_bucket"
+                  }
+                },
+                "Next": "CheckJobStatus",
+                "ResultPath": "$.jobResult"
+              },
+              "CheckJobStatus": {
+                "Type": "Choice",
+                "Choices": [
+                  {
+                    "Variable": "$.jobResult.Status",
+                    "StringEquals": "SUCCEEDED",
+                    "Next": "JobSucceeded"
+                  },
+                  {
+                    "Variable": "$.jobResult.Status",
+                    "StringEquals": "FAILED",
+                    "Next": "JobFailed"
+                  }
+                ],
+                "Default": "WaitAndRetry"
+              },
+              "WaitAndRetry": {
+                "Type": "Wait",
+                "Seconds": 60,
+                "Next": "SubmitBatchJob"
+              },
+              "JobSucceeded": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Parameters": {
+                  "FunctionName": "UpdateJobStatusFunction",
+                  "Payload": {
+                    "status": "COMPLETED",
+                    "job_id.$": "$.job_id",
+                    "completedAt.$": "$$.State.EnteredTime"
+                  }
+                },
+                "End": true
+              },
+              "JobFailed": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Parameters": {
+                  "FunctionName": "UpdateJobStatusFunction",
+                  "Payload": {
+                    "status": "FAILED",
+                    "job_id.$": "$.job_id"
+                  }
+                },
+                "End": true
+              }
+            }
+          }
+        - WhisperJobQueueName: !Ref WhisperJobQueueName
+          WhisperJobDefinitionName: !Ref WhisperJobDefinitionName
+      TracingConfiguration:
+        Enabled: false
+
+Outputs:
+  StateMachineArn:
+    Description: The ARN of the Step Functions State Machine
+    Value: !Ref VideoProcessingStateMachine
+    Export:
+      Name: !Sub "${AWS::StackName}-StateMachineARN"

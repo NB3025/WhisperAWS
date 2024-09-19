@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS Batch Resources for Video Processing Workflow
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The ID of the VPC
+
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The ID of Public Subnet 1
+
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The ID of Public Subnet 2
+
+  ContainerImageUri:
+    Type: String
+    Description: The URI of the container image in ECR (e.g.,
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/whisper-processor:latest)
+
+  InstanceTypes:
+      Type: CommaDelimitedList
+      Description: Comma-separated list of EC2 instance types
+      Default: "c7g.8xlarge"
+
+Resources:
+  BatchSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: BatchSecurityGroup
+      GroupDescription: Security group for AWS Batch Compute Environment
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+
+  EcsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-EcsInstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  EcsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${AWS::StackName}-EcsInstanceProfile
+      Roles:
+        - !Ref EcsInstanceRole
+
+  BatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-BatchServiceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: batch.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+
+  WhisperComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !GetAtt BatchServiceRole.Arn
+      ComputeEnvironmentName: !Sub ${AWS::StackName}-WhisperComputeEnvironment
+      ComputeResources:
+        Type: EC2
+        AllocationStrategy: BEST_FIT_PROGRESSIVE
+        MinvCpus: 0
+        MaxvCpus: 96
+        InstanceTypes: !Ref InstanceTypes
+        Subnets:
+          - !Ref PublicSubnet1Id
+          - !Ref PublicSubnet2Id
+        InstanceRole: !GetAtt EcsInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref BatchSecurityGroup
+        Ec2Configuration:
+          - ImageType: ECS_AL2
+      State: ENABLED
+      UpdatePolicy:
+        TerminateJobsOnUpdate: false
+        JobExecutionTimeoutMinutes: 30
+
+  WhisperJobQueue:
+    Type: AWS::Batch::JobQueue
+    Properties:
+      JobQueueName: !Sub ${AWS::StackName}-WhisperJobQueue
+      Priority: 1
+      State: ENABLED
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref WhisperComputeEnvironment
+
+  WhisperJobDefinition:
+    Type: AWS::Batch::JobDefinition
+    Properties:
+      JobDefinitionName: !Sub ${AWS::StackName}-WhisperJobDefinition
+      Type: container
+      ContainerProperties:
+        Image: !Ref ContainerImageUri
+        Command:
+          - python3
+          - /app/process_audio.py
+          - Ref::S3Address
+          - Ref::OutputBucket
+          - Ref::JobId
+        JobRoleArn: !GetAtt BatchJobRole.Arn
+        ExecutionRoleArn: !GetAtt BatchJobRole.Arn
+        ResourceRequirements:
+          - Type: VCPU
+            Value: '16'
+          - Type: MEMORY
+            Value: '16384'
+        LogConfiguration:
+          LogDriver: awslogs
+          Options:
+            awslogs-group: /aws/batch/job
+            awslogs-region: !Ref AWS::Region
+            awslogs-stream-prefix: whisper-job
+      RetryStrategy:
+        Attempts: 2
+      Timeout:
+        AttemptDurationSeconds: 3600
+
+  BatchJobRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-BatchJobRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - batch.amazonaws.com
+                - ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+      Policies:
+        - PolicyName: ECRAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: '*'
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: 
+                  - arn:aws:s3:::*
+                  - arn:aws:s3:::*/*
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:log-group:/aws/batch/job:*
+
+Outputs:
+  BatchSecurityGroupId:
+    Description: The ID of the Batch Security Group
+    Value: !GetAtt BatchSecurityGroup.GroupId
+    Export:
+      Name: !Sub ${AWS::StackName}-BatchSecurityGroupID
+
+  WhisperJobQueueName:
+    Description: The ARN of the Whisper Job Queue
+    Value: !Ref WhisperJobQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-WhisperJobQueueName
+
+  WhisperJobDefinitionName:
+    Description: The ARN of the Whisper Job Definition
+    Value: !Ref WhisperJobDefinition
+    Export:
+      Name: !Sub ${AWS::StackName}-WhisperJobDefinitionName

@@ -1,0 +1,6 @@
+torch==2.4.0
+transformers==4.43.3
+datasets==2.20.0
+accelerate
+boto3
+moviepy

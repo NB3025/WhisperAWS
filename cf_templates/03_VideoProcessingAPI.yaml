@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'API Gateway with Lambda integration and Step Functions'
+
+Parameters:
+  S3BucketName:
+    Type: String
+    Description: Name of the S3 bucket containing Lambda code
+  ProcessVideoS3Key:
+    Type: String
+    Description: S3 key for the ProcessVideo Lambda function code
+  UpdateJobStatusS3Key:
+    Type: String
+    Description: S3 key for the UpdateJobStatus Lambda function code
+  StepFunctionsArn:
+    Type: String
+    Description: ARN of the Step Functions state machine
+  DynamoDBTableName:
+    Type: String
+    Description: Name of the DynamoDB table for storing job information
+
+Resources:
+  MyApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: VideoProcessingAPI
+      Description: API for video processing using S3 addresses
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt MyApiGateway.RootResourceId
+      PathPart: 'process'
+      RestApiId: !Ref MyApiGateway
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref MyApiGateway
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt ProcessVideoFunction.Arn
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref MyApiGateway
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiGatewayDeployment
+      RestApiId: !Ref MyApiGateway
+      StageName: 'prod'
+
+  ProcessVideoFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ProcessVideoFunction
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref ProcessVideoS3Key
+      Runtime: python3.8
+      Timeout: 30
+      Environment:
+        Variables:
+          STEP_FUNCTIONS_ARN: !Ref StepFunctionsArn
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTableName
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${S3BucketName}/${ProcessVideoS3Key}
+        - PolicyName: StepFunctionsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - states:StartExecution
+                Resource: !Ref StepFunctionsArn
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ProcessVideoFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${MyApiGateway}/*/POST/process
+
+  UpdateJobStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UpdateJobStatusFunction
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt UpdateJobStatusLambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Ref UpdateJobStatusS3Key
+      Runtime: python3.8
+      Timeout: 30
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTableName
+
+  UpdateJobStatusLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}
+
+  UpdateJobStatusLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt UpdateJobStatusFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: states.amazonaws.com
+      SourceArn: !Ref StepFunctionsArn
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Endpoint"
+    Value: !Sub "https://${MyApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/process"
