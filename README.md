@@ -6,6 +6,9 @@
 ![아키텍처](images/WhisperAWS_Architecture.png)
 
 
+## 웹 페이지 화면
+![웹페이지](images/frontend.png)
+
 ## 주요 기능
 
 - Whisper 모델을 배치형태로 병렬 실행
